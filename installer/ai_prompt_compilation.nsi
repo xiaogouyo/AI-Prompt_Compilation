@@ -4,9 +4,9 @@
 !include "MUI2.nsh"
 
 !define APPNAME "AI Prompt Compilation"
-!define APPVERSION "1.0.1"
+!define APPVERSION "1.0.2"
 !define COMPANY "AI Prompt Dev"
-!define OUTFILE "..\\dist\\AI-Prompt-Compilation-Setup-1.0.1.exe"
+!define OUTFILE "..\\dist\\AI-Prompt-Compilation-Setup-1.0.2.exe"
 !define UNINST_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APPNAME}"
 
 OutFile "${OUTFILE}"
@@ -14,7 +14,7 @@ InstallDir "$LOCALAPPDATA\\${APPNAME}"
 RequestExecutionLevel user
 Unicode true
 
-VIProductVersion "1.0.1.0"
+VIProductVersion "1.0.2.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${COMPANY}"
 VIAddVersionKey "FileDescription" "${APPNAME} Installer"
