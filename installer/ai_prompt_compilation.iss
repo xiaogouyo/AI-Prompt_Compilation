@@ -7,6 +7,7 @@ AppName=AI Prompt Compilation
 AppVersion=1.0.2
 AppPublisher=AI Prompt Dev
 DefaultDirName={autopf}\AI Prompt Compilation
+DisableDirPage=no
 DefaultGroupName=AI Prompt Compilation
 ; 为了避免与旧安装包混淆，带上版本号
 OutputBaseFilename=AI-Prompt-Compilation-Setup-1.0.2
@@ -28,10 +29,12 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
 
 [Files]
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 安装应用图标到目标目录，供快捷方式引用
+Source: "..\windows\runner\resources\app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\AI Prompt Compilation"; Filename: "{app}\ai_prompt_compilation.exe"; IconFilename: "..\windows\runner\resources\app_icon.ico"
-Name: "{commondesktop}\AI Prompt Compilation"; Filename: "{app}\ai_prompt_compilation.exe"; Tasks: desktopicon; IconFilename: "..\windows\runner\resources\app_icon.ico"
+Name: "{group}\AI Prompt Compilation"; Filename: "{app}\ai_prompt_compilation.exe"; IconFilename: "{app}\app_icon.ico"; IconIndex: 0
+Name: "{commondesktop}\AI Prompt Compilation"; Filename: "{app}\ai_prompt_compilation.exe"; Tasks: desktopicon; IconFilename: "{app}\app_icon.ico"; IconIndex: 0
 
 [Run]
 Filename: "{app}\ai_prompt_compilation.exe"; Description: "运行 AI Prompt Compilation"; Flags: nowait postinstall skipifsilent
