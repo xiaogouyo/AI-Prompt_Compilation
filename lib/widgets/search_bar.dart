@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state.dart';
@@ -48,35 +49,35 @@ class _GlobalSearchBarState extends State<GlobalSearchBar> {
       _controller.text = app.searchQuery;
       _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
     }
-    // 局部 Shortcuts：优先级高于默认 TextEditingShortcuts，保证 Ctrl+K 始终被捕捉
-    final LogicalKeySet? searchKeySet = (() {
+    // 局部 Shortcuts：使用 SingleActivator 提升可靠性，避免与默认文本编辑快捷键冲突
+    final ShortcutActivator? searchActivator = (() {
       final s = app.searchFocusShortcut.trim().toLowerCase();
       if (s.isEmpty || s == 'none') return null;
-      final base = LogicalKeyboardKey.keyK;
       if (s == 'ctrl+shift+k' || s == 'control+shift+k') {
-        return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.shift, base);
+        return const SingleActivator(LogicalKeyboardKey.keyK, control: true, shift: true);
       }
       if (s == 'ctrl+alt+k' || s == 'control+alt+k') {
-        return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.alt, base);
+        return const SingleActivator(LogicalKeyboardKey.keyK, control: true, alt: true);
       }
-      return LogicalKeySet(LogicalKeyboardKey.control, base);
+      return const SingleActivator(LogicalKeyboardKey.keyK, control: true);
     })();
 
     return Shortcuts(
       shortcuts: <ShortcutActivator, Intent>{
-        if (searchKeySet != null) searchKeySet: const SearchBarRefocusIntent(),
+        if (searchActivator != null) searchActivator: const SearchBarRefocusIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
+          // 处理 Ctrl+K：始终保持搜索框焦点
           SearchBarRefocusIntent: CallbackAction<SearchBarRefocusIntent>(
             onInvoke: (intent) {
-              // 保持焦点，并打印日志，防止被 TextField 默认快捷键吞掉
               debugPrint('SearchBar captured: Ctrl+K');
               FocusScope.of(context).requestFocus(_focusNode);
-              app.showSnack(context, '已捕获 Ctrl+K（搜索框仍保持焦点）');
               return null;
             },
           ),
+          // 注意：部分平台默认可能将 Ctrl+K 映射为编辑命令。
+          // 这里通过本地 Shortcuts 捕获后保持焦点，通常即可覆盖默认行为。
         },
         child: SizedBox(
           height: 40,

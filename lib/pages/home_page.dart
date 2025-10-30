@@ -35,10 +35,13 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final FocusNode _searchFocusNode = FocusNode();
+  // 根级焦点节点：用于在点击空白处时恢复焦点，保证全局快捷键有效
+  final FocusNode _appFocusNode = FocusNode();
 
   @override
   void dispose() {
     _searchFocusNode.dispose();
+    _appFocusNode.dispose();
     super.dispose();
   }
 
@@ -46,22 +49,36 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final appWatch = context.watch<AppState>();
     // 使用 Shortcuts + Actions 基于 LogicalKeySet 的绑定，提升兼容性
-    final LogicalKeySet? searchKeySet = (() {
+    final ShortcutActivator? searchActivator = (() {
       final s = appWatch.searchFocusShortcut.trim().toLowerCase();
       if (s.isEmpty || s == 'none') return null;
-      final base = LogicalKeyboardKey.keyK;
       if (s == 'ctrl+shift+k' || s == 'control+shift+k') {
-        return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.shift, base);
+        return const SingleActivator(LogicalKeyboardKey.keyK, control: true, shift: true);
       }
       if (s == 'ctrl+alt+k' || s == 'control+alt+k') {
-        return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.alt, base);
+        return const SingleActivator(LogicalKeyboardKey.keyK, control: true, alt: true);
       }
-      return LogicalKeySet(LogicalKeyboardKey.control, base);
+      return const SingleActivator(LogicalKeyboardKey.keyK, control: true);
     })();
-    final LogicalKeySet? manualKeySet = appWatch.buildManualSaveKeySet();
+    final ShortcutActivator? manualActivator = (() {
+      final s = appWatch.manualSaveShortcut.trim().toLowerCase();
+      if (s.isEmpty || s == 'none') return null;
+      if (s == 'ctrl+shift+s' || s == 'control+shift+s') {
+        return const SingleActivator(LogicalKeyboardKey.keyS, control: true, shift: true);
+      }
+      if (s == 'ctrl+alt+s' || s == 'control+alt+s') {
+        return const SingleActivator(LogicalKeyboardKey.keyS, control: true, alt: true);
+      }
+      return const SingleActivator(LogicalKeyboardKey.keyS, control: true);
+    })();
     return Focus(
+      focusNode: _appFocusNode,
       autofocus: true,
       onKeyEvent: (node, event) {
+        // 若搜索框已聚焦，交由搜索框自身的 Shortcuts/Actions 处理，避免父级拦截
+        if (_searchFocusNode.hasFocus) {
+          return KeyEventResult.ignored;
+        }
         // 调试：记录按键事件，便于定位桌面端快捷键问题
         if (event is KeyDownEvent) {
           debugPrint('KeyDown: ' + (event.logicalKey.debugName ?? event.logicalKey.keyLabel ?? 'unknown'));
@@ -74,7 +91,7 @@ class _HomePageState extends State<HomePage> {
           bool searchMatch = false;
           if (s.isNotEmpty && s != 'none') {
             if (event.logicalKey == LogicalKeyboardKey.keyK) {
-              if ((s == 'ctrl+k' || s == 'control+k') && isCtrl && !isShift && !isAlt) searchMatch = true;
+              if ((s == 'ctrl+k' || s == 'control+k') && isCtrl) searchMatch = true; // 忽略 Alt 卡住的情况
               if ((s == 'ctrl+shift+k' || s == 'control+shift+k') && isCtrl && isShift && !isAlt) searchMatch = true;
               if ((s == 'ctrl+alt+k' || s == 'control+alt+k') && isCtrl && !isShift && isAlt) searchMatch = true;
             }
@@ -82,7 +99,6 @@ class _HomePageState extends State<HomePage> {
           if (searchMatch) {
             debugPrint('Shortcut matched: search focus');
             FocusScope.of(context).requestFocus(_searchFocusNode);
-            appWatch.showSnack(context, '已聚焦到搜索框');
             return KeyEventResult.handled;
           }
           // 手动保存快捷键匹配
@@ -90,7 +106,7 @@ class _HomePageState extends State<HomePage> {
           bool manualMatch = false;
           if (m.isNotEmpty && m != 'none') {
             if (event.logicalKey == LogicalKeyboardKey.keyS) {
-              if ((m == 'ctrl+s' || m == 'control+s') && isCtrl && !isShift && !isAlt) manualMatch = true;
+              if ((m == 'ctrl+s' || m == 'control+s') && isCtrl) manualMatch = true; // 忽略 Alt 卡住的情况
               if ((m == 'ctrl+shift+s' || m == 'control+shift+s') && isCtrl && isShift && !isAlt) manualMatch = true;
               if ((m == 'ctrl+alt+s' || m == 'control+alt+s') && isCtrl && !isShift && isAlt) manualMatch = true;
             }
@@ -105,8 +121,8 @@ class _HomePageState extends State<HomePage> {
       },
       child: Shortcuts(
         shortcuts: <ShortcutActivator, Intent>{
-          if (searchKeySet != null) searchKeySet: const SearchFocusIntent(),
-          if (manualKeySet != null) manualKeySet: const ManualSaveIntent(),
+          if (searchActivator != null) searchActivator: const SearchFocusIntent(),
+          if (manualActivator != null) manualActivator: const ManualSaveIntent(),
         },
         child: Actions(
           actions: <Type, Action<Intent>>{
@@ -243,11 +259,17 @@ class _HomePageState extends State<HomePage> {
           ),
           const VerticalDivider(width: 1),
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+            child: GestureDetector(
+              behavior: HitTestBehavior.deferToChild,
+              onTap: () {
+                // 点击空白区域，恢复根级焦点以继续响应快捷键
+                FocusScope.of(context).requestFocus(_appFocusNode);
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
                   Row(
                     children: [
                       const Expanded(child: BreadcrumbBar()),
@@ -423,6 +445,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                 ],
+                ),
               ),
             ),
           ),
@@ -608,15 +631,22 @@ class _HomePageState extends State<HomePage> {
       app.showSnack(context, 'Web 端不支持本地历史记录', error: true);
       return;
     }
-    final list = await StorageService.instance.listAutoSaveHistory();
+    final storage = StorageService.instance;
+    final auto = await storage.listAutoSaveHistory();
+    final manual = await storage.listManualSaveHistory();
+    final list = [
+      ...auto.map((e) => {...e, 'type': '自动'}),
+      ...manual.map((e) => {...e, 'type': '手动'}),
+    ]
+      ..sort((a, b) => (b['modified'] as DateTime).compareTo(a['modified'] as DateTime));
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('历史保存记录'),
+        title: const Text('历史保存记录（自动/手动）'),
         content: SizedBox(
           width: 560,
           child: list.isEmpty
-              ? const Text('暂无自动保存记录')
+              ? const Text('暂无保存记录')
               : ListView.separated(
                   shrinkWrap: true,
                   itemCount: list.length,
@@ -626,9 +656,10 @@ class _HomePageState extends State<HomePage> {
                     final path = item['path'] as String;
                     final modified = item['modified'] as DateTime;
                     final size = item['size'] as int;
+                    final type = item['type'] as String; // 自动 或 手动
                     return ListTile(
                       dense: true,
-                      title: Text('${modified.toString().replaceFirst('T', ' ').split('.').first}'),
+                      title: Text('${modified.toString().replaceFirst('T', ' ').split('.').first} · ${type}保存'),
                       subtitle: Text('$path\n${(size / 1024).toStringAsFixed(1)} KB'),
                       isThreeLine: true,
                       trailing: Wrap(
