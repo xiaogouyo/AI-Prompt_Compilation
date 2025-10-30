@@ -186,6 +186,30 @@ class StorageService {
     }
   }
 
+  // 列出手动保存历史（包含路径与修改时间）
+  Future<List<Map<String, dynamic>>> listManualSaveHistory() async {
+    if (kIsWeb) return [];
+    final dirPath = autoSaveDirPath ?? await _defaultAutoSaveDirPath();
+    try {
+      final files = Directory(dirPath)
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.uri.pathSegments.last.startsWith('ai_prompt_manual_') &&
+              f.path.toLowerCase().endsWith('.json'))
+          .toList();
+      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      return files
+          .map((f) => {
+                'path': f.path,
+                'modified': f.lastModifiedSync(),
+                'size': f.lengthSync(),
+              })
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<Group> createGroup(String name, {String? parentId}) async {
     final uuid = const Uuid().v4();
     final level = parentId == null ? 1 : (getGroup(parentId)?.level ?? 0) + 1;

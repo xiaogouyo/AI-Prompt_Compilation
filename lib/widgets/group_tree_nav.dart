@@ -199,11 +199,20 @@ class _GroupTreeNavState extends State<GroupTreeNav> {
                   icon: const Icon(Icons.delete_outline, size: 18),
                 onPressed: () async {
                   final app = context.read<AppState>();
-                  final ok = await _confirm(context, '确认删除该分组并保留其子分组与提示词？');
-                  if (ok == true) {
-                    await storage.deleteGroupKeepChildren(g.id);
-                    setState(() {});
-                    app.refresh();
+                  if (hasChildren) {
+                    final ok = await _confirm(context, '确认删除该分组并保留其子分组，同时并入该组的提示词到父级叶子？');
+                    if (ok == true) {
+                      await storage.deleteGroupKeepChildren(g.id);
+                      setState(() {});
+                      app.refresh();
+                    }
+                  } else {
+                    final ok = await _confirm(context, '确认删除该叶子分组及其提示词？');
+                    if (ok == true) {
+                      await storage.deleteGroup(g.id);
+                      setState(() {});
+                      app.refresh();
+                    }
                   }
                 },
               ),
