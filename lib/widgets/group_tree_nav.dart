@@ -101,6 +101,86 @@ class _GroupTreeNavState extends State<GroupTreeNav> {
                 },
               ),
                 IconButton(
+                  tooltip: '合并到…',
+                  icon: const Icon(Icons.merge_type, size: 18),
+                  onPressed: () async {
+                    String? selectedTargetId;
+                    String mode = 'structure'; // 'structure' or 'content'
+                    bool dedup = true;
+                    bool removeSource = true;
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) {
+                        return StatefulBuilder(builder: (ctx, setState) {
+                          return AlertDialog(
+                            title: const Text('选择目标分组与合并模式'),
+                            content: SingleChildScrollView(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('来源：${g.name}'),
+                                  const SizedBox(height: 8),
+                                  Text('目标分组：'),
+                                  ..._buildParentOptions(context, null, selectedTargetId, (id) => setState(() => selectedTargetId = id)),
+                                  const Divider(),
+                                  RadioListTile<String>(
+                                    title: const Text('结构合并（迁移子分组到目标）'),
+                                    value: 'structure',
+                                    groupValue: mode,
+                                    onChanged: (v) => setState(() => mode = v ?? 'structure'),
+                                  ),
+                                  RadioListTile<String>(
+                                    title: const Text('内容合并（提示词合并到目标叶子）'),
+                                    value: 'content',
+                                    groupValue: mode,
+                                    onChanged: (v) => setState(() => mode = v ?? 'content'),
+                                  ),
+                                  if (mode == 'content')
+                                    CheckboxListTile(
+                                      title: const Text('按标题+内容去重'),
+                                      value: dedup,
+                                      onChanged: (v) => setState(() => dedup = v ?? true),
+                                    ),
+                                  CheckboxListTile(
+                                    title: const Text('完成后删除源分组'),
+                                    value: removeSource,
+                                    onChanged: (v) => setState(() => removeSource = v ?? true),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+                              ElevatedButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('确定'),
+                              ),
+                            ],
+                          );
+                        });
+                      },
+                    );
+                    if (ok == true && selectedTargetId != null && selectedTargetId != g.id) {
+                      try {
+                        if (mode == 'structure') {
+                          await storage.mergeGroupStructure(g.id, selectedTargetId!, removeSource: removeSource);
+                        } else {
+                          final leafId = await storage.ensureLeafUnder(selectedTargetId!, defaultName: '未分类');
+                          await storage.flattenPromptsUnderToLeaf(g.id, leafId, deduplicate: dedup);
+                          if (removeSource) {
+                            await storage.deleteGroupKeepChildren(g.id);
+                          }
+                        }
+                        setState(() {});
+                        app.selectGroup(selectedTargetId!);
+                      } catch (e) {
+                        app.showSnack(context, '合并失败', detail: e.toString(), error: true);
+                      }
+                    }
+                  },
+                ),
+                IconButton(
                   tooltip: '移动到…',
                   icon: const Icon(Icons.drive_file_move, size: 18),
                 onPressed: () async {
@@ -119,9 +199,9 @@ class _GroupTreeNavState extends State<GroupTreeNav> {
                   icon: const Icon(Icons.delete_outline, size: 18),
                 onPressed: () async {
                   final app = context.read<AppState>();
-                  final ok = await _confirm(context, '确认删除该分组及其所有子分组与提示词？');
+                  final ok = await _confirm(context, '确认删除该分组并保留其子分组与提示词？');
                   if (ok == true) {
-                    await storage.deleteGroup(g.id);
+                    await storage.deleteGroupKeepChildren(g.id);
                     setState(() {});
                     app.refresh();
                   }
@@ -235,6 +315,19 @@ class _GroupTreeNavState extends State<GroupTreeNav> {
           final data = details.data;
           try {
             if (data is Group) {
+              // 若目标分组含有提示词，则先迁移到其子叶分组再放置为子分组
+              final hasPrompts = storage.getPromptsInGroup(g.id).isNotEmpty;
+              if (hasPrompts) {
+                final proceed = await _confirm(context, '目标分组包含提示词，将其迁移到子叶分组后再进行操作，是否继续？');
+                if (proceed != true) {
+                  return;
+                }
+                final leafId = await storage.ensureLeafUnder(g.id, defaultName: '未分类');
+                final prompts = storage.getPromptsInGroup(g.id);
+                for (final p in prompts) {
+                  await storage.movePrompt(p.id, leafId);
+                }
+              }
               await storage.moveGroup(data.id, newParentId: g.id);
               // 自动选中被移动的分组，便于查看其提示词与子分组
               app.selectGroup(data.id);

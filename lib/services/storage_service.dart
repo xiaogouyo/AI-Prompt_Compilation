@@ -118,6 +118,195 @@ class StorageService {
     _bumpOps();
   }
 
+  /// 删除分组但保留其子分组：
+  /// - 子分组提升到父级（保持相对顺序，追加到末尾）
+  /// - 若该组自身存在提示词，则迁移到父级下的某叶子分组（不存在则新建）
+  Future<void> deleteGroupKeepChildren(String id) async {
+    final group = getGroup(id);
+    if (group == null) return;
+    final parentId = group.parentId;
+
+    // 1) 处理该组自身的提示词：迁移到父级下的叶子分组
+    final ownPrompts = getPromptsInGroup(group.id);
+    if (ownPrompts.isNotEmpty) {
+      final leafId = await ensureLeafUnder(parentId, defaultName: '未分类');
+      for (final p in ownPrompts) {
+        final updated = p.copyWith(
+          groupId: leafId,
+          sortOrder: _calcNextPromptSortOrder(leafId),
+        );
+        await _promptBox.put(p.id, updated);
+      }
+    }
+
+    // 2) 提升子分组到父级：维持相对顺序并调整层级
+    final children = getChildren(group.id)
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    int baseOrder = _calcNextSortOrder(parentId);
+    // 计算目标父深度用于层级校验
+    final targetDepth = parentId == null ? 0 : buildPathGroups(parentId).length;
+    for (int i = 0; i < children.length; i++) {
+      final child = children[i];
+      // 计算子树最大深度以校验不超过 5 层
+      final depths = <String, int>{};
+      void dfsDepth(String curId, int depth) {
+        depths[curId] = depth;
+        for (final c in getChildren(curId)) {
+          dfsDepth(c.id, depth + 1);
+        }
+      }
+      dfsDepth(child.id, 0);
+      final newLevelRoot = targetDepth + 1; // 直接成为父级的子分组
+      final maxNewLevel = depths.values.map((d) => newLevelRoot + d).fold<int>(1, (m, v) => v > m ? v : m);
+      if (maxNewLevel > 5) {
+        throw StateError('删除后子分组提升将导致层级超过 5 层，操作被拒绝');
+      }
+
+      // 更新子树：根节点 parentId 改为父级，sortOrder 追加；其余节点仅调整 level
+      final updatedRoot = Group(
+        id: child.id,
+        name: child.name,
+        level: newLevelRoot,
+        parentId: parentId,
+        sortOrder: baseOrder + i,
+      );
+      await _groupBox.put(child.id, updatedRoot);
+
+      for (final entry in depths.entries) {
+        final gid = entry.key;
+        final depth = entry.value;
+        if (gid == child.id) continue;
+        final g = getGroup(gid)!;
+        final updated = Group(
+          id: g.id,
+          name: g.name,
+          level: newLevelRoot + depth,
+          parentId: g.parentId,
+          sortOrder: g.sortOrder,
+        );
+        await _groupBox.put(g.id, updated);
+      }
+    }
+
+    // 3) 删除当前分组本身
+    await _groupBox.delete(group.id);
+    _invalidateCaches();
+    await _compactSiblingSortOrders(parentId);
+    _bumpOps();
+  }
+
+  /// 确保在指定父分组下存在一个叶子分组，若不存在则创建并返回其 id。
+  Future<String> ensureLeafUnder(String? parentId, {String defaultName = '未分类'}) async {
+    final children = getChildren(parentId);
+    // 先尝试找到已有叶子分组
+    for (final c in children) {
+      final hasKids = getChildren(c.id).isNotEmpty;
+      if (!hasKids) {
+        return c.id;
+      }
+    }
+    // 不存在则新建一个叶子分组
+    final g = await createGroup(defaultName, parentId: parentId);
+    return g.id;
+  }
+
+  /// 结构合并：将 source 的所有子分组迁移到 target 下；
+  /// 如 removeSource 为 true，则删除 source 本身；source 的提示词会迁移到 target 下的叶子分组。
+  Future<void> mergeGroupStructure(String sourceId, String targetId, {bool removeSource = true}) async {
+    final source = getGroup(sourceId);
+    final target = getGroup(targetId);
+    if (source == null || target == null) return;
+    if (sourceId == targetId) throw StateError('不能与自身合并');
+
+    final targetDepth = buildPathGroups(targetId).length;
+    // 按顺序迁移子分组
+    final children = getChildren(sourceId)
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    int baseOrder = _calcNextSortOrder(targetId);
+    for (int i = 0; i < children.length; i++) {
+      final child = children[i];
+      final depths = <String, int>{};
+      void dfsDepth(String curId, int depth) {
+        depths[curId] = depth;
+        for (final c in getChildren(curId)) {
+          dfsDepth(c.id, depth + 1);
+        }
+      }
+      dfsDepth(child.id, 0);
+      final newLevelRoot = targetDepth + 1;
+      final maxNewLevel = depths.values.map((d) => newLevelRoot + d).fold<int>(1, (m, v) => v > m ? v : m);
+      if (maxNewLevel > 5) {
+        throw StateError('合并后层级超过 5 层，操作被拒绝');
+      }
+      // 根迁移到 target，保持追加顺序
+      final updatedRoot = Group(
+        id: child.id,
+        name: child.name,
+        level: newLevelRoot,
+        parentId: targetId,
+        sortOrder: baseOrder + i,
+      );
+      await _groupBox.put(child.id, updatedRoot);
+      for (final entry in depths.entries) {
+        final gid = entry.key;
+        final depth = entry.value;
+        if (gid == child.id) continue;
+        final g = getGroup(gid)!;
+        final updated = Group(
+          id: g.id,
+          name: g.name,
+          level: newLevelRoot + depth,
+          parentId: g.parentId,
+          sortOrder: g.sortOrder,
+        );
+        await _groupBox.put(g.id, updated);
+      }
+    }
+
+    // 迁移 source 自身的提示词到 target 下的一个叶子分组
+    final ownPrompts = getPromptsInGroup(sourceId);
+    if (ownPrompts.isNotEmpty) {
+      final leafId = await ensureLeafUnder(targetId, defaultName: '未分类');
+      for (final p in ownPrompts) {
+        final updated = p.copyWith(
+          groupId: leafId,
+          sortOrder: _calcNextPromptSortOrder(leafId),
+        );
+        await _promptBox.put(p.id, updated);
+      }
+    }
+
+    if (removeSource) {
+      await _groupBox.delete(sourceId);
+    }
+    _invalidateCaches();
+    await _compactSiblingSortOrders(targetId);
+    _bumpOps();
+  }
+
+  /// 内容合并：将 source 子树下的所有提示词，迁移到目标叶子分组。
+  Future<void> flattenPromptsUnderToLeaf(String sourceId, String targetLeafId, {bool deduplicate = false}) async {
+    final targetLeaf = getGroup(targetLeafId);
+    if (targetLeaf == null) throw StateError('目标分组不存在');
+    final hasKids = getChildren(targetLeafId).isNotEmpty;
+    if (hasKids) throw StateError('目标分组必须为叶子分组');
+
+    final prompts = collectPromptsUnder(sourceId);
+    // 目标已有的用于去重
+    final existing = _promptBox.values.where((p) => p.groupId == targetLeafId).toList();
+    for (final p in prompts) {
+      if (deduplicate && existing.any((x) => x.title == p.title && x.content == p.content)) {
+        continue;
+      }
+      final updated = p.copyWith(
+        groupId: targetLeafId,
+        sortOrder: _calcNextPromptSortOrder(targetLeafId),
+      );
+      await _promptBox.put(p.id, updated);
+    }
+    _bumpOps();
+  }
+
   // 将分组移动到新的父分组（或根），并根据新位置调整子树的 level
   Future<void> moveGroup(String id, {String? newParentId}) async {
     final group = getGroup(id);

@@ -15,6 +15,7 @@ dependencies:
   provider: ^6.1.2
   uuid: ^4.4.0
   file_picker: ^8.0.0
+  # 解决 Flutter Web 编译兼容性问题：移除不兼容的隐式动画列表库
 
 dev_dependencies:
   flutter_test:
