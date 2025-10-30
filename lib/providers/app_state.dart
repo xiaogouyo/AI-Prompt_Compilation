@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/services.dart';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../models/group.dart';
@@ -14,6 +17,15 @@ class AppState extends ChangeNotifier {
   Timer? _searchDebounce;
   StreamSubscription? _groupWatchSub;
   StreamSubscription? _promptWatchSub;
+  Timer? _autoSaveTimer;
+
+  // 自动保存设置缓存（来源于 StorageService.settings）
+  bool get autoSaveEnabled => _storage.autoSaveEnabled;
+  int get autoSaveIntervalMinutes => _storage.autoSaveIntervalMinutes;
+  int get autoSaveRetainCount => _storage.autoSaveRetainCount;
+  String? get autoSaveDirPath => _storage.autoSaveDirPath;
+  String get manualSaveShortcut => _storage.manualSaveShortcut;
+  String get searchFocusShortcut => _storage.searchFocusShortcut;
 
   // 外观与密度设置
   ThemeMode themeMode = ThemeMode.system;
@@ -85,6 +97,8 @@ class AppState extends ChangeNotifier {
     // 监听存储层变化，自动刷新
     _groupWatchSub = _storage.groupEvents().listen((_) => notifyListeners());
     _promptWatchSub = _storage.promptEvents().listen((_) => notifyListeners());
+
+    _scheduleAutoSave();
   }
 
   void selectGroup(String groupId) {
@@ -139,6 +153,89 @@ class AppState extends ChangeNotifier {
       selectedGroupId = roots.isNotEmpty ? roots.first.id : null;
     }
     // 依赖 watch 事件自动触发，仍保留显式刷新以应对选择变化
+    notifyListeners();
+  }
+
+  // —— 自动保存 ——
+  void _scheduleAutoSave() {
+    _autoSaveTimer?.cancel();
+    if (kIsWeb) return; // Web 不进行本地自动保存
+    if (!autoSaveEnabled) return;
+    final interval = Duration(minutes: autoSaveIntervalMinutes.clamp(1, 1440));
+    _autoSaveTimer = Timer.periodic(interval, (_) async {
+      try {
+        await _storage.saveAutoSnapshot(); // 全库自动保存
+      } catch (_) {}
+    });
+  }
+
+  // 构建按键组合
+  LogicalKeySet? buildManualSaveKeySet() {
+    final s = manualSaveShortcut.trim();
+    if (s.isEmpty || s.toLowerCase() == 'none') return null;
+    final base = LogicalKeyboardKey.keyS;
+    if (s.toLowerCase() == 'ctrl+s' || s.toLowerCase() == 'control+s') {
+      return LogicalKeySet(LogicalKeyboardKey.control, base);
+    }
+    if (s.toLowerCase() == 'ctrl+shift+s' || s.toLowerCase() == 'control+shift+s') {
+      return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.shift, base);
+    }
+    if (s.toLowerCase() == 'ctrl+alt+s' || s.toLowerCase() == 'control+alt+s') {
+      return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.alt, base);
+    }
+    // 默认：Ctrl+S
+    return LogicalKeySet(LogicalKeyboardKey.control, base);
+  }
+
+  // 触发手动保存
+  Future<void> triggerManualSave(BuildContext context) async {
+    if (kIsWeb) {
+      final data = _storage.exportJson();
+      final jsonStr = JsonEncoder.withIndent('  ').convert(data);
+      await Clipboard.setData(ClipboardData(text: jsonStr));
+      showSnack(context, '已复制 JSON 到剪贴板', detail: '可粘贴保存为 ai_prompt_manual.json');
+      return;
+    }
+    try {
+      final file = await _storage.saveManualSnapshot();
+      showSnack(context, '已手动保存', detail: file?.path ?? '');
+    } catch (e) {
+      showSnack(context, '手动保存失败', detail: e.toString(), error: true);
+    }
+  }
+
+  Future<void> setManualSaveShortcut(String s) async {
+    await _storage.setManualSaveShortcut(s);
+    notifyListeners();
+  }
+
+  Future<void> setSearchFocusShortcut(String s) async {
+    await _storage.setSearchFocusShortcut(s);
+    notifyListeners();
+  }
+
+  Future<void> setAutoSaveEnabled(bool v) async {
+    await _storage.setAutoSaveEnabled(v);
+    _scheduleAutoSave();
+    notifyListeners();
+  }
+
+  Future<void> setAutoSaveIntervalMinutes(int m) async {
+    if (m < 1) m = 1;
+    await _storage.setAutoSaveIntervalMinutes(m);
+    _scheduleAutoSave();
+    notifyListeners();
+  }
+
+  Future<void> setAutoSaveRetainCount(int n) async {
+    if (n < 1) n = 1;
+    await _storage.setAutoSaveRetainCount(n);
+    notifyListeners();
+  }
+
+  Future<void> setAutoSaveDirPath(String path) async {
+    await _storage.setAutoSaveDirPath(path);
+    _scheduleAutoSave();
     notifyListeners();
   }
 

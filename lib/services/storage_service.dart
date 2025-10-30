@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../utils/query_parser.dart';
@@ -15,6 +16,7 @@ class StorageService {
 
   late Box<Group> _groupBox;
   late Box<Prompt> _promptBox;
+  late Box _settingsBox;
   int _opsSinceCompact = 0;
   DateTime _lastCompactAt = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -26,6 +28,24 @@ class StorageService {
   Future<void> init() async {
     _groupBox = await Hive.openBox<Group>('groups');
     _promptBox = await Hive.openBox<Prompt>('prompts');
+    _settingsBox = await Hive.openBox('settings');
+    // 初始化默认设置
+    _settingsBox.put('autoSaveEnabled', _settingsBox.get('autoSaveEnabled') ?? false);
+    _settingsBox.put('autoSaveIntervalMinutes', _settingsBox.get('autoSaveIntervalMinutes') ?? 10);
+    _settingsBox.put('autoSaveRetainCount', _settingsBox.get('autoSaveRetainCount') ?? 20);
+    if (_settingsBox.get('manualSaveShortcut') == null) {
+      _settingsBox.put('manualSaveShortcut', kIsWeb ? 'Ctrl+Shift+S' : 'Ctrl+S');
+    }
+    if (_settingsBox.get('searchFocusShortcut') == null) {
+      _settingsBox.put('searchFocusShortcut', kIsWeb ? 'Ctrl+Shift+K' : 'Ctrl+K');
+    }
+    // 路径为空则使用默认路径（非 Web）
+    if (!kIsWeb && _settingsBox.get('autoSaveDirPath') == null) {
+      try {
+        final def = await _defaultAutoSaveDirPath();
+        _settingsBox.put('autoSaveDirPath', def);
+      } catch (_) {}
+    }
   }
 
   // 监听/可监听接口供 UI 使用
@@ -61,6 +81,110 @@ class StorageService {
 
   List<Group> get allGroups => _groupBox.values.toList();
   List<Prompt> get allPrompts => _promptBox.values.toList();
+
+  // —— 自动保存设置 ——
+  bool get autoSaveEnabled => (_settingsBox.get('autoSaveEnabled') as bool?) ?? false;
+  int get autoSaveIntervalMinutes => (_settingsBox.get('autoSaveIntervalMinutes') as int?) ?? 10;
+  int get autoSaveRetainCount => (_settingsBox.get('autoSaveRetainCount') as int?) ?? 20;
+  String? get autoSaveDirPath => _settingsBox.get('autoSaveDirPath') as String?;
+  String get manualSaveShortcut => (_settingsBox.get('manualSaveShortcut') as String?) ?? 'Ctrl+S';
+  String get searchFocusShortcut => (_settingsBox.get('searchFocusShortcut') as String?) ?? 'Ctrl+K';
+
+  Future<void> setAutoSaveEnabled(bool v) async => _settingsBox.put('autoSaveEnabled', v);
+  Future<void> setAutoSaveIntervalMinutes(int m) async => _settingsBox.put('autoSaveIntervalMinutes', m);
+  Future<void> setAutoSaveRetainCount(int n) async => _settingsBox.put('autoSaveRetainCount', n);
+  Future<void> setAutoSaveDirPath(String path) async => _settingsBox.put('autoSaveDirPath', path);
+  Future<void> setManualSaveShortcut(String s) async => _settingsBox.put('manualSaveShortcut', s);
+  Future<void> setSearchFocusShortcut(String s) async => _settingsBox.put('searchFocusShortcut', s);
+
+  Future<String> _defaultAutoSaveDirPath() async {
+    final dir = await getApplicationSupportDirectory();
+    final path = Path.join(dir.path, 'autosaves');
+    await Directory(path).create(recursive: true);
+    return path;
+  }
+
+  String _ts(DateTime dt) {
+    String two(int n) => n < 10 ? '0$n' : '$n';
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = two(dt.month);
+    final d = two(dt.day);
+    final hh = two(dt.hour);
+    final mm = two(dt.minute);
+    final ss = two(dt.second);
+    return '${y}${m}${d}_${hh}${mm}${ss}';
+  }
+
+  Future<void> _enforceAutoSaveRetention(String dirPath) async {
+    try {
+      final ents = Directory(dirPath)
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.toLowerCase().endsWith('.json') &&
+              f.uri.pathSegments.last.startsWith('ai_prompt_autosave_'))
+          .toList();
+      ents.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      final keep = autoSaveRetainCount;
+      if (ents.length > keep) {
+        for (var i = keep; i < ents.length; i++) {
+          try {
+            ents[i].deleteSync();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 执行自动保存快照（格式与导出 JSON 相同）
+  Future<File?> saveAutoSnapshot({String? rootGroupId}) async {
+    if (kIsWeb) return null; // Web 不写入本地文件
+    final enabled = autoSaveEnabled;
+    if (!enabled) return null;
+    final dirPath = autoSaveDirPath ?? await _defaultAutoSaveDirPath();
+    await Directory(dirPath).create(recursive: true);
+    final name = 'ai_prompt_autosave_${_ts(DateTime.now())}.json';
+    final file = File(Path.join(dirPath, name));
+    final data = exportJson(rootGroupId: rootGroupId);
+    await file.writeAsString(const JsonEncoder.withIndent('  ').convert(data));
+    await _enforceAutoSaveRetention(dirPath);
+    return file;
+  }
+
+  // 手动保存快照（不受开关影响），同样使用导出 JSON 格式
+  Future<File?> saveManualSnapshot({String? rootGroupId}) async {
+    if (kIsWeb) return null; // Web 不写入本地文件
+    final dirPath = autoSaveDirPath ?? await _defaultAutoSaveDirPath();
+    await Directory(dirPath).create(recursive: true);
+    final name = 'ai_prompt_manual_${_ts(DateTime.now())}.json';
+    final file = File(Path.join(dirPath, name));
+    final data = exportJson(rootGroupId: rootGroupId);
+    await file.writeAsString(const JsonEncoder.withIndent('  ').convert(data));
+    return file;
+  }
+
+  // 列出自动保存历史（包含路径与修改时间）
+  Future<List<Map<String, dynamic>>> listAutoSaveHistory() async {
+    if (kIsWeb) return [];
+    final dirPath = autoSaveDirPath ?? await _defaultAutoSaveDirPath();
+    try {
+      final files = Directory(dirPath)
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.uri.pathSegments.last.startsWith('ai_prompt_autosave_') &&
+              f.path.toLowerCase().endsWith('.json'))
+          .toList();
+      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      return files
+          .map((f) => {
+                'path': f.path,
+                'modified': f.lastModifiedSync(),
+                'size': f.lengthSync(),
+              })
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
 
   Future<Group> createGroup(String name, {String? parentId}) async {
     final uuid = const Uuid().v4();

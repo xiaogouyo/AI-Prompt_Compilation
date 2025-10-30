@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state.dart';
+
+class SearchBarRefocusIntent extends Intent {
+  const SearchBarRefocusIntent();
+}
 
 class GlobalSearchBar extends StatefulWidget {
   const GlobalSearchBar({super.key, this.focusNode});
@@ -43,17 +48,48 @@ class _GlobalSearchBarState extends State<GlobalSearchBar> {
       _controller.text = app.searchQuery;
       _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
     }
+    // 局部 Shortcuts：优先级高于默认 TextEditingShortcuts，保证 Ctrl+K 始终被捕捉
+    final LogicalKeySet? searchKeySet = (() {
+      final s = app.searchFocusShortcut.trim().toLowerCase();
+      if (s.isEmpty || s == 'none') return null;
+      final base = LogicalKeyboardKey.keyK;
+      if (s == 'ctrl+shift+k' || s == 'control+shift+k') {
+        return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.shift, base);
+      }
+      if (s == 'ctrl+alt+k' || s == 'control+alt+k') {
+        return LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.alt, base);
+      }
+      return LogicalKeySet(LogicalKeyboardKey.control, base);
+    })();
 
-    return SizedBox(
-      height: 40,
-      child: TextField(
-        controller: _controller,
-        focusNode: _focusNode,
-        onChanged: app.setSearchQuery,
-        decoration: const InputDecoration(
-          prefixIcon: Icon(Icons.search),
-          hintText: '全局搜索：标题 / 内容 / 标签 / 分组',
-          isDense: true,
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        if (searchKeySet != null) searchKeySet: const SearchBarRefocusIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          SearchBarRefocusIntent: CallbackAction<SearchBarRefocusIntent>(
+            onInvoke: (intent) {
+              // 保持焦点，并打印日志，防止被 TextField 默认快捷键吞掉
+              debugPrint('SearchBar captured: Ctrl+K');
+              FocusScope.of(context).requestFocus(_focusNode);
+              app.showSnack(context, '已捕获 Ctrl+K（搜索框仍保持焦点）');
+              return null;
+            },
+          ),
+        },
+        child: SizedBox(
+          height: 40,
+          child: TextField(
+            controller: _controller,
+            focusNode: _focusNode,
+            onChanged: app.setSearchQuery,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.search),
+              hintText: '全局搜索：标题 / 内容 / 标签 / 分组',
+              isDense: true,
+            ),
+          ),
         ),
       ),
     );
